@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path"
@@ -72,6 +73,11 @@ func (c Cli) Run(cmd string) (string, error) {
 }
 
 func (c Cli) Upload(localPath, remotePath string) error {
+	if c.sftpClient == nil {
+		if err := c.Connect(); err != nil {
+			return err
+		}
+	}
 	localInfo, err := os.Stat(localPath)
 	if err != nil {
 		return fmt.Errorf("无法获取本地路径信息：%s", err)
@@ -83,6 +89,73 @@ func (c Cli) Upload(localPath, remotePath string) error {
 	}
 }
 
+func (c Cli) Download(remotePath, localPath string) error {
+	if c.sftpClient == nil {
+		if err := c.Connect(); err != nil {
+			return err
+		}
+	}
+	remoteFileInfo, err := c.sftpClient.Stat(remotePath)
+	if err != nil {
+		return fmt.Errorf("无法获取远程文件或文件夹信息：%s", err)
+	}
+	if remoteFileInfo.IsDir() {
+		return c.downloadDir(remotePath, localPath)
+	} else {
+		return c.downloadFile(remotePath, localPath)
+	}
+}
+
+// localPath是个文件夹
+func (c Cli) downloadFile(remotePath, localPath string) error {
+	remoteFile, err := c.sftpClient.Open(remotePath)
+	if err != nil {
+		return fmt.Errorf("无法打开远程文件：%s", err)
+	}
+	defer remoteFile.Close()
+
+	var localFileName = path.Base(remotePath)
+	localFile, err := os.Create(path.Join(localPath, localFileName))
+	if err != nil {
+		return fmt.Errorf("无法创建本地文件：%s", err)
+	}
+	defer localFile.Close()
+
+	_, err = io.Copy(localFile, remoteFile)
+	if err != nil {
+		return fmt.Errorf("文件下载失败：%s", err)
+	}
+	return nil
+}
+
+func (c Cli) downloadDir(remotePath, localPath string) error {
+	// 获取远程文件夹中的文件列表
+	remoteFiles, err := c.sftpClient.ReadDir(remotePath)
+	if err != nil {
+		return fmt.Errorf("无法读取远程文件夹中的文件：%s", err)
+	}
+	// 递归下载文件夹中的文件
+	for _, remoteFile := range remoteFiles {
+		remoteFilePath := path.Join(remotePath, remoteFile.Name())
+		localFilePath := path.Join(localPath, remoteFile.Name())
+
+		if remoteFile.IsDir() {
+			os.Mkdir(remoteFilePath, 0755)
+			err := c.downloadDir(remoteFilePath, localFilePath)
+			if err != nil {
+				return err
+			}
+		} else {
+			err := c.downloadFile(remoteFilePath, localPath)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// remotePath是个文件夹
 func (c Cli) uploadFile(localFilePath, remotePath string) error {
 	fmt.Println(localFilePath + " copy file to remote server start!")
 	srcFile, err := os.Open(localFilePath)
@@ -117,7 +190,7 @@ func (c Cli) uploadDir(localPath, remotePath string) error {
 			c.sftpClient.Mkdir(remoteFilePath)
 			c.uploadDir(localFilePath, remoteFilePath)
 		} else {
-			c.uploadFile(path.Join(localPath, backupDir.Name()), remotePath)
+			c.uploadFile(localFilePath, remotePath)
 		}
 	}
 	return nil
