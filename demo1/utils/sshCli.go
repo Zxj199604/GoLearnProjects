@@ -2,9 +2,9 @@ package utils
 
 import (
 	"fmt"
-	"io"
+	"io/ioutil"
 	"os"
-	"path/filepath"
+	"path"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -23,7 +23,7 @@ type Cli struct {
 func NewSSHClient(user, pwd, ip, port string) Cli {
 	return Cli{
 		user: user,
-		pwd:  port,
+		pwd:  pwd,
 		ip:   ip,
 		port: port,
 	}
@@ -36,7 +36,7 @@ func (c *Cli) getConfig_nokey() *ssh.ClientConfig {
 		Auth: []ssh.AuthMethod{
 			ssh.Password(c.pwd),
 		},
-		Timeout:         30 * time.Second,
+		Timeout:         30 * time.Minute,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 }
@@ -76,7 +76,6 @@ func (c Cli) Upload(localPath, remotePath string) error {
 	if err != nil {
 		return fmt.Errorf("无法获取本地路径信息：%s", err)
 	}
-
 	if localInfo.IsDir() {
 		return c.uploadDir(localPath, remotePath)
 	} else {
@@ -84,48 +83,41 @@ func (c Cli) Upload(localPath, remotePath string) error {
 	}
 }
 
-func (c Cli) uploadFile(localPath, remotePath string) error {
-	localFile, err := os.Open(localPath)
+func (c Cli) uploadFile(localFilePath, remotePath string) error {
+	fmt.Println(localFilePath + " copy file to remote server start!")
+	srcFile, err := os.Open(localFilePath)
 	if err != nil {
-		return fmt.Errorf("无法打开本地文件：%s", err)
+		return fmt.Errorf("os.Open error : %s", localFilePath)
 	}
-	defer localFile.Close()
-
-	remoteFile, err := c.sftpClient.Create(remotePath)
+	defer srcFile.Close()
+	var remoteFileName = path.Base(localFilePath)
+	dstFile, err := c.sftpClient.Create(path.Join(remotePath, remoteFileName))
 	if err != nil {
-		return fmt.Errorf("无法创建远程文件：%s", err)
+		return fmt.Errorf("sftpClient.Create error : %s", path.Join(remotePath, remoteFileName))
 	}
-	defer remoteFile.Close()
-
-	_, err = io.Copy(remoteFile, localFile)
+	defer dstFile.Close()
+	ff, err := ioutil.ReadAll(srcFile)
 	if err != nil {
-		return fmt.Errorf("文件上传失败：%s", err)
+		return fmt.Errorf("ReadAll error : %s", localFilePath)
 	}
+	dstFile.Write(ff)
+	fmt.Println(localFilePath + " copy file to remote server finished!")
 	return nil
 }
 
 func (c Cli) uploadDir(localPath, remotePath string) error {
-	localFiles, err := filepath.Glob(filepath.Join(localPath, "*"))
+	localFiles, err := ioutil.ReadDir(localPath)
 	if err != nil {
-		return fmt.Errorf("无法读取本地文件夹：%s", err)
+		return fmt.Errorf("read dir list fail:%s ", err)
 	}
-	for _, file := range localFiles {
-		localInfo, err := os.Stat(file)
-		if err != nil {
-			return fmt.Errorf("无法获取本地路径信息：%s", err)
-		}
-
-		remoteFilePath := filepath.Join(remotePath, localInfo.Name())
-		if localInfo.IsDir() {
-			err = c.uploadDir(file, remoteFilePath)
-			if err != nil {
-				return err
-			}
+	for _, backupDir := range localFiles {
+		localFilePath := path.Join(localPath, backupDir.Name())
+		remoteFilePath := path.Join(remotePath, backupDir.Name())
+		if backupDir.IsDir() {
+			c.sftpClient.Mkdir(remoteFilePath)
+			c.uploadDir(localFilePath, remoteFilePath)
 		} else {
-			err = c.uploadFile(file, remoteFilePath)
-			if err != nil {
-				return err
-			}
+			c.uploadFile(path.Join(localPath, backupDir.Name()), remotePath)
 		}
 	}
 	return nil
